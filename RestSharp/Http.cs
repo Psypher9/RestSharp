@@ -33,7 +33,7 @@ namespace RestSharp
     /// <summary>
     ///     HttpWebRequest wrapper
     /// </summary>
-    public partial class Http : IHttp, IHttpFactory
+    public partial class Http : IHttp
     {
         private const string LINE_BREAK = "\r\n";
 
@@ -233,16 +233,12 @@ namespace RestSharp
         ///     Creates an IHttp
         /// </summary>
         /// <returns></returns>
-        public IHttp Create()
-        {
-            return new Http();
-        }
+        public static IHttp Create() => new Http();
 
-        protected virtual HttpWebRequest CreateWebRequest(Uri url)
-        {
-            return (HttpWebRequest) WebRequest.Create(url);
-        }
+        protected virtual HttpWebRequest CreateWebRequest(Uri url) => (HttpWebRequest) WebRequest.Create(url);
 
+        public Action<HttpWebRequest> WebRequestConfigurator { get; set; }
+        
         partial void AddSyncHeaderActions();
 
         private void AddSharedHeaderActions()
@@ -251,9 +247,7 @@ namespace RestSharp
             restrictedHeaderActions.Add("Content-Type", (r, v) => r.ContentType = v);
             restrictedHeaderActions.Add("Date", (r, v) =>
             {
-                DateTime parsed;
-
-                if (DateTime.TryParse(v, out parsed))
+                if (DateTime.TryParse(v, out var parsed))
                     r.Date = parsed;
             });
 
@@ -440,9 +434,11 @@ namespace RestSharp
                 ResponseWriter(webResponseStream);
         }
 
+        private static readonly Regex AddRangeRegex = new Regex("(\\w+)=(\\d+)-(\\d+)$");
+
         private static void AddRange(HttpWebRequest r, string range)
         {
-            var m = Regex.Match(range, "(\\w+)=(\\d+)-(\\d+)$");
+            var m = AddRangeRegex.Match(range);
 
             if (!m.Success)
                 return;

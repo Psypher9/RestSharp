@@ -3,7 +3,9 @@ using System.Linq;
 using System.Runtime.Serialization;
 using System.Security.Cryptography;
 using System.Text;
+using System.Xml;
 using RestSharp.Authenticators.OAuth.Extensions;
+using RestSharp.Extensions;
 
 namespace RestSharp.Authenticators.OAuth
 {
@@ -108,22 +110,20 @@ namespace RestSharp.Authenticators.OAuth
         /// <seealso cref="http://stackoverflow.com/questions/846487/how-to-get-uri-escapedatastring-to-comply-with-rfc-3986" />
         public static string UrlEncodeRelaxed(string value)
         {
-            // Start with RFC 2396 escaping by calling the .NET method to do the work.
-            // This MAY sometimes exhibit RFC 3986 behavior (according to the documentation).
-            // If it does, the escaping we do that follows it will be a no-op since the
-            // characters we search for to replace can't possibly exist in the string.
-            var escaped = new StringBuilder(Uri.EscapeDataString(value));
-
-            // Upgrade the escaping to RFC 3986, if necessary.
+            // Escape RFC 3986 chars first.
+            var escapedRfc3986 = new StringBuilder(value);
             for (var i = 0; i < uriRfc3986CharsToEscape.Length; i++)
             {
                 var t = uriRfc3986CharsToEscape[i];
 
-                escaped.Replace(t, uriRfc3968EscapedHex[i]);
+                escapedRfc3986.Replace(t, uriRfc3968EscapedHex[i]);
             }
 
+            // Do RFC 2396 escaping by calling the .NET method to do the work.
+            string escapedRfc2396 = Uri.EscapeDataString(escapedRfc3986.ToString());
+
             // Return the fully-RFC3986-escaped string.
-            return escaped.ToString();
+            return escapedRfc2396;
         }
 
         /// <summary>
@@ -313,8 +313,8 @@ namespace RestSharp.Authenticators.OAuth
                 tokenSecret = string.Empty;
 
             var unencodedConsumerSecret = consumerSecret;
-            consumerSecret = UrlEncodeRelaxed(consumerSecret);
-            tokenSecret = UrlEncodeRelaxed(tokenSecret);
+            consumerSecret = Uri.EscapeDataString(consumerSecret);
+            tokenSecret = Uri.EscapeDataString(tokenSecret);
 
             string signature;
 
@@ -342,9 +342,9 @@ namespace RestSharp.Authenticators.OAuth
 
                 case OAuthSignatureMethod.RsaSha1:
                 {
-                    using (var provider = new RSACryptoServiceProvider() { PersistKeyInCsp = false })
+                    using (var provider = new RSACryptoServiceProvider { PersistKeyInCsp = false })
                     {
-                        provider.FromXmlString(unencodedConsumerSecret);
+                        provider.FromXmlString2(unencodedConsumerSecret);
 
                         SHA1Managed hasher = new SHA1Managed();
                         byte[] hash = hasher.ComputeHash(encoding.GetBytes(signatureBase));

@@ -40,12 +40,9 @@ namespace RestSharp
         // silverlight friendly way to get current version      
         private static readonly Version version = new AssemblyName(Assembly.GetExecutingAssembly().FullName).Version;
 
-        private static readonly Regex StructuredSyntaxSuffixRegex = new Regex(@"\+\w+$", RegexOptions.Compiled);
+        private static readonly Regex StructuredSyntaxSuffixRegex = new Regex(@"\+\w+$");
 
-        private static readonly Regex StructuredSyntaxSuffixWildcardRegex =
-            new Regex(@"^\*\+\w+$", RegexOptions.Compiled);
-
-        public IHttpFactory HttpFactory = new SimpleFactory<Http>();
+        private static readonly Regex StructuredSyntaxSuffixWildcardRegex = new Regex(@"^\*\+\w+$");
 
         /// <summary>
         ///     Default constructor that registers default content handlers
@@ -73,6 +70,7 @@ namespace RestSharp
             FollowRedirects = true;
         }
 
+        /// <inheritdoc />
         /// <summary>
         ///     Sets the BaseUrl property for requests made by this client instance
         /// </summary>
@@ -82,6 +80,7 @@ namespace RestSharp
             BaseUrl = baseUrl;
         }
 
+        /// <inheritdoc />
         /// <summary>
         ///     Sets the BaseUrl property for requests made by this client instance
         /// </summary>
@@ -97,6 +96,8 @@ namespace RestSharp
         private IDictionary<string, IDeserializer> ContentHandlers { get; }
 
         private IList<string> AcceptTypes { get; }
+        
+        private Action<HttpWebRequest> WebRequestConfigurator { get; set; }
 
         /// <summary>
         /// Enable or disable automatic gzip/deflate decompression
@@ -220,7 +221,9 @@ namespace RestSharp
 
             if (contentType == "*" || IsWildcardStructuredSuffixSyntax(contentType)) return;
 
-            AcceptTypes.Add(contentType);
+            if (!AcceptTypes.Contains(contentType))
+                AcceptTypes.Add(contentType);
+            
             // add Accept header based on registered deserializers
             var accepts = string.Join(", ", AcceptTypes.ToArray());
 
@@ -254,6 +257,9 @@ namespace RestSharp
             return Deserialize<T>(response.Request, response);
         }
 
+        public void ConfigureWebRequest(Action<HttpWebRequest> configurator) =>
+            WebRequestConfigurator = configurator;
+
         /// <summary>
         ///     Assembles URL to call based on parameters, method and resource
         /// </summary>
@@ -263,10 +269,10 @@ namespace RestSharp
         {
             DoBuildUriValidations(request);
 
-            var applied = ApplyUrlSegmentParamsValues(request);
+            var applied = GetUrlSegmentParamsValues(request);
 
-            BaseUrl = applied.uri;
-            string resource = applied.resource;
+            BaseUrl = applied.Uri;
+            string resource = applied.Resource;
 
             string mergedUri = MergeBaseUrlAndResource(resource);
 
@@ -288,23 +294,23 @@ namespace RestSharp
 
             if (nullValuedParams.Any())
             {
-                string names = string.Join(", ", nullValuedParams.Select(name => $"'{name}'").ToArray());
+                var names = string.Join(", ", nullValuedParams.Select(name => $"'{name}'").ToArray());
                 throw new ArgumentException($"Cannot build uri when url segment parameter(s) {names} value is null.",
-                    "request");
+                    nameof(request));
             }
         }
 
-        private (Uri uri, string resource) ApplyUrlSegmentParamsValues(IRestRequest request)
+        private UrlSegmentParamsValues GetUrlSegmentParamsValues(IRestRequest request)
         {
-            string assembled = request.Resource;
-            bool hasResource = !string.IsNullOrEmpty(assembled);
+            var assembled = request.Resource;
+            var hasResource = !string.IsNullOrEmpty(assembled);
             var urlParms = request.Parameters.Where(p => p.Type == ParameterType.UrlSegment);
             var builder = new UriBuilder(BaseUrl);
 
             foreach (var parameter in urlParms)
             {
-                string paramPlaceHolder = $"{{{parameter.Name}}}";
-                string paramValue = parameter.Value.ToString().UrlEncode();
+                var paramPlaceHolder = $"{{{parameter.Name}}}";
+                var paramValue = parameter.Value.ToString().UrlEncode();
 
                 if (hasResource)
                 {
@@ -314,12 +320,12 @@ namespace RestSharp
                 builder.Path = builder.Path.UrlDecode().Replace(paramPlaceHolder, paramValue);
             }
 
-            return (builder.Uri, assembled);
+            return new UrlSegmentParamsValues(builder.Uri, assembled);
         }
 
         private string MergeBaseUrlAndResource(string resource)
         {
-            string assembled = resource;
+            var assembled = resource;
 
             if (!string.IsNullOrEmpty(assembled) && assembled.StartsWith("/"))
             {
@@ -351,7 +357,7 @@ namespace RestSharp
                 return mergedUri;
             }
 
-            string separator = mergedUri != null && mergedUri.Contains("?") ? "&" : "?";
+            var separator = mergedUri != null && mergedUri.Contains("?") ? "&" : "?";
 
             return string.Concat(mergedUri, separator, EncodeParameters(parameters, Encoding));
         }
@@ -395,7 +401,7 @@ namespace RestSharp
 
                 if (structuredSyntaxSuffixMatch.Success)
                 {
-                    string structuredSyntaxSuffixWildcard = "*" + structuredSyntaxSuffixMatch.Value;
+                    var structuredSyntaxSuffixWildcard = "*" + structuredSyntaxSuffixMatch.Value;
                     if (ContentHandlers.ContainsKey(structuredSyntaxSuffixWildcard))
                     {
                         return ContentHandlers[structuredSyntaxSuffixWildcard];
@@ -421,14 +427,17 @@ namespace RestSharp
         private static readonly ParameterType[] MultiParameterTypes =
             {ParameterType.QueryString, ParameterType.GetOrPost};
 
-        private void ConfigureHttp(IRestRequest request, IHttp http)
+        internal IHttp ConfigureHttp(IRestRequest request)
         {
+            var http = Http.Create();
+            
             http.Encoding = Encoding;
             http.AlwaysMultipartFormData = request.AlwaysMultipartFormData;
             http.UseDefaultCredentials = request.UseDefaultCredentials;
             http.ResponseWriter = request.ResponseWriter;
             http.CookieContainer = CookieContainer;
             http.AutomaticDecompression = AutomaticDecompression;
+            http.WebRequestConfigurator = WebRequestConfigurator;
 
             // move RestClient.DefaultParameters into Request.Parameters
             foreach (var p in DefaultParameters)
@@ -466,18 +475,18 @@ namespace RestSharp
                 ? userAgent
                 : "RestSharp/" + version;
 
-            var timeout = request.Timeout > 0
+            var timeout = request.Timeout != 0
                 ? request.Timeout
                 : Timeout;
 
-            if (timeout > 0)
+            if (timeout != 0)
                 http.Timeout = timeout;
 
-            var readWriteTimeout = request.ReadWriteTimeout > 0
+            var readWriteTimeout = request.ReadWriteTimeout != 0
                 ? request.ReadWriteTimeout
                 : ReadWriteTimeout;
 
-            if (readWriteTimeout > 0)
+            if (readWriteTimeout != 0)
                 http.ReadWriteTimeout = readWriteTimeout;
 
             http.FollowRedirects = FollowRedirects;
@@ -488,7 +497,7 @@ namespace RestSharp
             http.MaxRedirects = MaxRedirects;
             http.CachePolicy = CachePolicy;
             http.Pipelined = Pipelined;
-
+            
             if (request.Credentials != null)
                 http.Credentials = request.Credentials;
 
@@ -565,22 +574,12 @@ namespace RestSharp
                     });
                 }
             }
-            
+
             http.AllowedDecompressionMethods = request.AllowedDecompressionMethods;
-
-            http.Proxy = Proxy;
-            
-            #if !NETSTANDARD2_0
-            if (http.Proxy == null)
-                http.Proxy = HttpWebRequest.GetSystemWebProxy();
-            #endif
-    
-            #if NETSTANDARD2_0
-            var _ = WebRequest.DefaultWebProxy;
-            WebRequest.DefaultWebProxy = http.Proxy;
-            #endif
-
+            http.Proxy = Proxy ?? (WebRequest.DefaultWebProxy ?? HttpWebRequest.GetSystemWebProxy());
             http.RemoteCertificateValidationCallback = RemoteCertificateValidationCallback;
+
+            return http;
         }
 
         private static RestResponse ConvertToRestResponse(IRestRequest request, HttpResponse httpResponse)
@@ -690,6 +689,18 @@ namespace RestSharp
 
             // At this point it is probably using a wildcard structured syntax suffix, but let's confirm.
             return StructuredSyntaxSuffixWildcardRegex.IsMatch(contentType);
+        }
+
+        private class UrlSegmentParamsValues
+        {
+            public UrlSegmentParamsValues(Uri builderUri, string assembled)
+            {
+                Uri = builderUri;
+                Resource = assembled;
+            }
+
+            public Uri Uri { get; } 
+            public string Resource { get; }
         }
     }
 }
